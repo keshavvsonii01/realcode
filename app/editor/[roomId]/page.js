@@ -165,7 +165,7 @@ export default function EditorPage() {
             </div>
             <div className="h-4 w-px bg-gray-700"></div>
             <span className="text-gray-500 text-xs">
-              Room: {roomId.slice(0, 8)}...
+              Room: {roomId}
             </span>
           </div>
 
