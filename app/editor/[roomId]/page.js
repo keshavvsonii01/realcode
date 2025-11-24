@@ -17,6 +17,10 @@ const Editor = dynamic(() => import('../../../components/Editor'), {
   )
 });
 
+const AIChat = dynamic(() => import('../../../components/AIChat'), {
+  ssr: false
+});
+
 export default function EditorPage() {
   const params = useParams();
   const roomId = params.roomId;
@@ -28,6 +32,12 @@ export default function EditorPage() {
     color: `hsl(${Math.random() * 360}, 70%, 60%)`
   });
   const [copied, setCopied] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [currentCode, setCurrentCode] = useState('');
+  
+  // Refs for Monaco editor access from AIChat
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
 
   useEffect(() => {
     const newSocket = io('http://localhost:3000');
@@ -165,7 +175,7 @@ export default function EditorPage() {
             </div>
             <div className="h-4 w-px bg-gray-700"></div>
             <span className="text-gray-500 text-xs">
-              Room: {roomId}
+              Room: {roomId.slice(0, 8)}...
             </span>
           </div>
 
@@ -184,6 +194,21 @@ export default function EditorPage() {
               ))}
             </select>
 
+            {/* AI Chat Toggle */}
+            <button
+              onClick={() => setIsChatOpen(!isChatOpen)}
+              className={`px-4 py-1.5 ${
+                isChatOpen 
+                  ? 'bg-purple-600 hover:bg-purple-500' 
+                  : 'bg-gray-700 hover:bg-gray-600'
+              } text-white rounded-md transition-colors text-sm font-medium flex items-center`}
+            >
+              <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              AI Assistant
+            </button>
+
             {/* Save Button */}
             <button className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors text-sm font-medium flex items-center">
               <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -194,17 +219,53 @@ export default function EditorPage() {
           </div>
         </div>
 
-        {/* Editor Area */}
-        <div className="flex-1 overflow-hidden">
-          {socket && (
-            <Editor
-              roomId={roomId}
-              socket={socket}
-              currentUser={currentUser}
-              language={language}
-            />
-          )}
-        </div>
+{/* Editor + AI Chat Container */}
+<div className="relative flex-1 overflow-hidden">
+
+  {/* Editor Area */}
+  <div className="absolute inset-0">
+    {socket && (
+      <Editor
+        roomId={roomId}
+        socket={socket}
+        currentUser={currentUser}
+        language={language}
+        editorRef={editorRef}
+        monacoRef={monacoRef}
+        onCodeChange={setCurrentCode}
+      />
+    )}
+  </div>
+
+  {/* BACKDROP (blur + fade) */}
+  {isChatOpen && (
+    <div
+      className="absolute inset-0 bg-black/40 backdrop-blur-sm z-40 transition-opacity duration-300"
+      onClick={() => setIsChatOpen(false)}
+    />
+  )}
+
+  {/* AI Chat Drawer (slide-in, overlay) */}
+  <div
+    className={`
+      absolute top-0 right-0 h-full w-80 md:w-80 z-50 shadow-2xl
+      bg-gray-900 border-l border-gray-700
+      transform transition-transform duration-300 ease-out
+      ${isChatOpen ? "translate-x-0" : "translate-x-full"}
+    `}
+  >
+    <AIChat
+      editorRef={editorRef}
+      monacoRef={monacoRef}
+      currentCode={currentCode}
+      language={language}
+      isOpen={isChatOpen}
+      onClose={() => setIsChatOpen(false)}
+    />
+  </div>
+
+</div>
+
       </div>
     </div>
   );

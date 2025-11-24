@@ -3,10 +3,39 @@ import MonacoEditor from '@monaco-editor/react';
 import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
 
-/* -------------------------
-   FIXED AWARENESS CLASS
--------------------------- */
-class SimpleAwareness {
+export default function Editor({ 
+  roomId, 
+  socket, 
+  currentUser, 
+  language, 
+  editorRef: parentEditorRef, 
+  monacoRef: parentMonacoRef,
+  onCodeChange 
+}) {
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const ydocRef = useRef(null);
+  const bindingRef = useRef(null);
+  const awarenessRef = useRef(null);
+  const [remoteCursors, setRemoteCursors] = useState({});
+
+  const handleEditorDidMount = (editor, monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    
+    // Expose to parent component for AI Chat
+    if (parentEditorRef) parentEditorRef.current = editor;
+    if (parentMonacoRef) parentMonacoRef.current = monaco;
+
+    // Initialize Yjs document
+    const ydoc = new Y.Doc();
+    ydocRef.current = ydoc;
+
+    // Get the shared text type
+    const ytext = ydoc.getText('monaco');
+
+    // Create a simple awareness implementation
+    class SimpleAwareness {
   constructor(socket, roomId, clientID) {
     this.socket = socket;
     this.roomId = roomId;
@@ -14,9 +43,7 @@ class SimpleAwareness {
 
     this.states = new Map();
     this.meta = new Map();
-
-    // Required for MonacoBinding
-    this.handlers = new Map();
+    this.handlers = new Map(); // required by MonacoBinding
   }
 
   on(event, handler) {
@@ -46,14 +73,12 @@ class SimpleAwareness {
   setLocalState(state) {
     this.states.set(this.clientID, state);
 
-    // Send update to server
-    this.socket.emit('yjs-awareness', {
+    this.socket.emit("yjs-awareness", {
       roomId: this.roomId,
       update: { clientID: this.clientID, state }
     });
 
-    // Notify MonacoBinding
-    this.notify('change');
+    this.notify("change");
   }
 
   setLocalStateField(field, value) {
@@ -67,39 +92,18 @@ class SimpleAwareness {
   }
 }
 
-export default function Editor({ roomId, socket, currentUser, language }) {
-  const editorRef = useRef(null);
-  const monacoRef = useRef(null);
-  const ydocRef = useRef(null);
-  const bindingRef = useRef(null);
-  const awarenessRef = useRef(null);
-  const [remoteCursors, setRemoteCursors] = useState({});
+ const awareness = new SimpleAwareness(socket, roomId, socket.id);
 
-  const handleEditorDidMount = (editor, monaco) => {
-    editorRef.current = editor;
-    monacoRef.current = monaco;
 
-    // Create Yjs doc
-    const ydoc = new Y.Doc();
-    ydocRef.current = ydoc;
-
-    const ytext = ydoc.getText('monaco');
-
-    /* -------------------------
-       CREATE FIXED AWARENESS
-    -------------------------- */
-    const awareness = new SimpleAwareness(socket, roomId, socket.id);
     awarenessRef.current = awareness;
 
-    // Your local user state
+    // Set local user info
     awareness.setLocalStateField('user', {
       name: currentUser.name,
       color: currentUser.color
     });
 
-    /* -------------------------
-       MONACO ↔ YJS BINDING
-    -------------------------- */
+    // Create Monaco binding
     const binding = new MonacoBinding(
       ytext,
       editor.getModel(),
@@ -108,31 +112,23 @@ export default function Editor({ roomId, socket, currentUser, language }) {
     );
     bindingRef.current = binding;
 
-    /* -------------------------
-       SEND LOCAL UPDATES
-    -------------------------- */
+    // Handle Yjs updates from this client
     ydoc.on('update', (update) => {
-      socket.emit('yjs-sync', {
-        roomId,
-        update: Array.from(update)
-      });
+      // Convert update to array for transmission
+      const updateArray = Array.from(update);
+      socket.emit('yjs-sync', { roomId, update: updateArray });
     });
 
-    /* -------------------------
-       RECEIVE REMOTE UPDATES
-    -------------------------- */
+    // Handle incoming Yjs updates from other clients
     socket.on('yjs-sync', ({ update }) => {
-      Y.applyUpdate(ydoc, new Uint8Array(update));
+      const uint8Array = new Uint8Array(update);
+      Y.applyUpdate(ydoc, uint8Array);
     });
 
-    /* -------------------------
-       REMOTE AWARENESS HANDLING
-    -------------------------- */
+    // Handle incoming awareness updates
     socket.on('yjs-awareness', ({ update }) => {
       if (update.clientID !== socket.id) {
         awareness.states.set(update.clientID, update.state);
-        awareness.notify('change');
-
         setRemoteCursors((prev) => ({
           ...prev,
           [update.clientID]: update.state
@@ -140,9 +136,7 @@ export default function Editor({ roomId, socket, currentUser, language }) {
       }
     });
 
-    /* -------------------------
-       CURSOR POSITION BROADCAST
-    -------------------------- */
+    // Listen for cursor position changes
     editor.onDidChangeCursorPosition((e) => {
       const position = e.position;
       socket.emit('cursor-position', {
@@ -151,43 +145,44 @@ export default function Editor({ roomId, socket, currentUser, language }) {
           lineNumber: position.lineNumber,
           column: position.column
         },
-        user: currentUser,
-        userId: socket.id
+        user: currentUser
       });
     });
 
-    /* -------------------------
-       REMOTE CURSOR DISPLAY
-    -------------------------- */
+    // Handle remote cursor updates
     socket.on('remote-cursor', ({ userId, position, user }) => {
       setRemoteCursors((prev) => ({
         ...prev,
         [userId]: { position, user }
       }));
 
+      // Render cursor decoration
       renderRemoteCursor(editor, monaco, userId, position, user);
     });
 
-    /* -------------------------
-       AUTO-SAVE (unchanged)
-    -------------------------- */
+    // Auto-save functionality
     let saveTimeout;
     editor.onDidChangeModelContent(() => {
       clearTimeout(saveTimeout);
+      
+      // Update parent component with current code for AI context
+      if (onCodeChange) {
+        onCodeChange(editor.getValue());
+      }
+      
       saveTimeout = setTimeout(() => {
+        const content = editor.getValue();
         socket.emit('save-code', {
           roomId,
-          content: editor.getValue(),
+          content,
           language
         });
       }, 2000);
     });
   };
 
-  /* ---------------------------------------------------
-     REMOTE CURSOR RENDERING  (unchanged)
-  ---------------------------------------------------- */
   const renderRemoteCursor = (editor, monaco, userId, position, user) => {
+    // Create decoration for remote cursor
     const decorations = editor.deltaDecorations(
       [],
       [
@@ -207,6 +202,7 @@ export default function Editor({ roomId, socket, currentUser, language }) {
       ]
     );
 
+    // Auto-remove decoration after 3 seconds
     setTimeout(() => {
       if (editor && !editor._isDisposed) {
         editor.deltaDecorations(decorations, []);
@@ -214,14 +210,17 @@ export default function Editor({ roomId, socket, currentUser, language }) {
     }, 3000);
   };
 
-  /* ---------------------------------------------------
-     CLEANUP
-  ---------------------------------------------------- */
   useEffect(() => {
     return () => {
-      if (bindingRef.current) bindingRef.current.destroy();
-      if (ydocRef.current) ydocRef.current.destroy();
-
+      // Cleanup
+      if (bindingRef.current) {
+        bindingRef.current.destroy();
+      }
+      if (ydocRef.current) {
+        ydocRef.current.destroy();
+      }
+      
+      // Remove socket listeners
       if (socket) {
         socket.off('yjs-sync');
         socket.off('yjs-awareness');
@@ -250,7 +249,6 @@ export default function Editor({ roomId, socket, currentUser, language }) {
           50% { opacity: 0.5; }
         }
       `}</style>
-
       <MonacoEditor
         height="100%"
         language={language}
@@ -271,14 +269,25 @@ export default function Editor({ roomId, socket, currentUser, language }) {
           smoothScrolling: true,
           renderLineHighlight: 'all',
           lineHeight: 22,
-          suggest: { showInlineDetails: true, preview: true },
-          quickSuggestions: { other: true, comments: false, strings: true },
-          parameterHints: { enabled: true },
+          suggest: {
+            showInlineDetails: true,
+            preview: true
+          },
+          quickSuggestions: {
+            other: true,
+            comments: false,
+            strings: true
+          },
+          parameterHints: {
+            enabled: true
+          },
           formatOnPaste: true,
           formatOnType: true,
           autoClosingBrackets: 'always',
           autoClosingQuotes: 'always',
-          bracketPairColorization: { enabled: true }
+          bracketPairColorization: {
+            enabled: true
+          }
         }}
       />
     </>
